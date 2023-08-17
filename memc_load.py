@@ -8,9 +8,9 @@ import memcache
 import os
 import sys
 
-from multiprocessing import Lock, Manager, Pool, Value
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Manager, Pool
 from optparse import OptionParser
-from threading import Thread
 
 import appsinstalled_pb2
 
@@ -107,20 +107,6 @@ def threadings(lines, device_memc, opts, errors, processed):
             errors.value += 1
 
 
-def run_thread(tasks, args):
-    task = Thread(
-            target=threadings,
-            args=args
-    )
-    tasks.append(task)
-    task.start()
-
-
-def join_thread(tasks):
-    for task in tasks:
-        task.join()
-
-
 def print_error_state(errors, processed):
     err_rate = float(errors.value) / processed.value
     if err_rate < NORMAL_ERR_RATE:
@@ -133,18 +119,16 @@ def process_file(fn, device_memc, opts, errors, processed):
     logging.info('Processing %s' % fn)
     fd = gzip.open(fn, 'rt')
     batch = []
-    tasks = []
 
-    for line in fd:
-        batch.append(line)
-        if len(batch) == BATCH:
-            run_thread(tasks, (batch, device_memc, opts, errors, processed))
-            batch.clear()
+    with ThreadPoolExecutor(max_workers=THREADS) as executor:
+        for line in fd:
+            batch.append(line)
+            if len(batch) == BATCH:
+                executor.submit(threadings, batch, device_memc, opts, errors, processed)
+                batch.clear()
 
-    if len(batch) > 0:
-        run_thread(tasks, (batch, device_memc, opts, errors, processed))
-
-    join_thread(tasks)
+        if len(batch) > 0:
+            executor.submit(threadings, batch, device_memc, opts, errors, processed)
 
     if not processed:
         fd.close()
