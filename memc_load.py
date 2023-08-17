@@ -7,6 +7,7 @@ import logging
 import memcache
 import os
 import sys
+import threading
 
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import Manager, Pool
@@ -20,6 +21,7 @@ AppsInstalled = collections.namedtuple("AppsInstalled", ["dev_type", "dev_id", "
 WORKERS = 4
 THREADS = 8
 BATCH = 40000
+THREAD_LOCAL_STORAGE = threading.local()
 
 
 def dot_rename(path):
@@ -40,14 +42,19 @@ def serialize(appsinstalled):
 
 
 def insert_appsinstalled(memc_addr, values, dry_run=False):
+    if not hasattr(THREAD_LOCAL_STORAGE, 'memc_connections'):
+        THREAD_LOCAL_STORAGE.memc_connections = {}
     try:
         if dry_run:
             logging.debug("%s - %s" % (memc_addr, values))
         else:
-            memc = memcache.Client([memc_addr])
+            if memc_addr not in THREAD_LOCAL_STORAGE.memc_connections:
+                THREAD_LOCAL_STORAGE.memc_connections[memc_addr] = memcache.Client([memc_addr])
+            memc = THREAD_LOCAL_STORAGE.memc_connections[memc_addr]
             memc.set_multi(values)
-    except Exception as e:
+    except memcache.Client.MemcachedKeyError as e:
         logging.exception("Cannot write to memc %s: %s" % (memc_addr, e))
+        THREAD_LOCAL_STORAGE.memc_connections.pop(memc_addr, None)
         return False
     return True
 
